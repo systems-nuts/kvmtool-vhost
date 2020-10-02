@@ -31,7 +31,7 @@
 #define VIRTIO_NET_NUM_QUEUES		8
 
 // the following to support vhost MQ
-//#define MQ
+#define MQ
 
 struct net_dev;
 
@@ -604,9 +604,9 @@ static int init_vq(struct kvm *kvm, void *dev, u32 vq, u32 page_size, u32 align,
 		   u32 pfn)
 {
 #ifdef MQ
-	struct vhost_vring_state state = { .index = vq };
+	struct vhost_vring_state state = { .index = (vq %2) };
 #else
-	struct vhost_vring_state state = { .index = (vq %2) };	
+	struct vhost_vring_state state = { .index = vq };	
 #endif
 	struct net_dev_queue *net_queue;
 	struct vhost_vring_addr addr;
@@ -780,7 +780,11 @@ static void notify_vq_eventfd(struct kvm *kvm, void *dev, u32 vq, u32 efd)
 {
 	struct net_dev *ndev = dev;
 	struct vhost_vring_file file = {
-		.index	= vq,
+#ifdef MQ
+		.index	= (vq % 2),
+#else
+		.index  = vq,
+#endif
 		.fd	= efd,
 	};
 	int r;
