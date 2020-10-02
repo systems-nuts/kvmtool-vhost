@@ -30,6 +30,9 @@
 #define VIRTIO_NET_QUEUE_SIZE		256
 #define VIRTIO_NET_NUM_QUEUES		8
 
+// the following to support vhost MQ
+//#define MQ
+
 struct net_dev;
 
 struct net_dev_operations {
@@ -58,6 +61,9 @@ struct net_dev {
 	u32				features, queue_pairs;
 
 	int				vhost_fd;
+#ifdef MQ
+	int				vhost_fds[VIRTIO_NET_NUM_QUEUES];
+#endif
 	int				tap_fd;
 	char				tap_name[IFNAMSIZ];
 	bool				tap_ufo;
@@ -515,6 +521,9 @@ static int virtio_net__vhost_set_features(struct net_dev *ndev)
 {
 	u64 features = 1UL << VIRTIO_RING_F_EVENT_IDX;
 	u64 vhost_features;
+#ifdef MQ
+	int i, r = 0;
+#endif
 
 	if (ioctl(ndev->vhost_fd, VHOST_GET_FEATURES, &vhost_features) != 0)
 		die_perror("VHOST_GET_FEATURES failed");
@@ -528,7 +537,13 @@ static int virtio_net__vhost_set_features(struct net_dev *ndev)
 			has_virtio_feature(ndev, VIRTIO_NET_F_MRG_RXBUF))
 		features |= 1UL << VIRTIO_NET_F_MRG_RXBUF;
 
-	return ioctl(ndev->vhost_fd, VHOST_SET_FEATURES, &features);
+#ifdef MQ
+	for (i=0; ((u32)i < ndev->queue_pairs) && (r >= 0); i++)
+		r = ioctl(ndev->vhost_fds[i], VHOST_SET_FEATURES, &features); 
+	return r;
+#else
+	return ioctl(ndev->vhost_fd, VHOST_SET_FEATURES, &features); 
+#endif
 }
 
 static void set_guest_features(struct kvm *kvm, void *dev, u32 features)
@@ -588,7 +603,11 @@ static bool is_ctrl_vq(struct net_dev *ndev, u32 vq)
 static int init_vq(struct kvm *kvm, void *dev, u32 vq, u32 page_size, u32 align,
 		   u32 pfn)
 {
+#ifdef MQ
 	struct vhost_vring_state state = { .index = vq };
+#else
+	struct vhost_vring_state state = { .index = (vq %2) };	
+#endif
 	struct net_dev_queue *net_queue;
 	struct vhost_vring_addr addr;
 	struct net_dev *ndev = dev;
@@ -626,31 +645,50 @@ static int init_vq(struct kvm *kvm, void *dev, u32 vq, u32 page_size, u32 align,
 		return 0;
 	}
 
+/* VHOST code follows, there is no VHOST crtl_vq (see above), ctrl_vq is the latest one */
 	if (queue->endian != VIRTIO_ENDIAN_HOST)
 		die_perror("VHOST requires the same endianness in guest and host");
 
-	state.num = queue->vring.num;
+	state.num = queue->vring.num; //number of decriptors
+#ifdef MQ
+        r = ioctl(ndev->vhost_fds[(vq /2)], VHOST_SET_VRING_NUM, &state);
+#else
 	r = ioctl(ndev->vhost_fd, VHOST_SET_VRING_NUM, &state);
+#endif
 	if (r < 0)
 		die_perror("VHOST_SET_VRING_NUM failed");
-	state.num = 0;
+
+	state.num = 0; //descriptors base
+#ifdef MQ
+	r = ioctl(ndev->vhost_fds[(vq /2)], VHOST_SET_VRING_BASE, &state);
+#else
 	r = ioctl(ndev->vhost_fd, VHOST_SET_VRING_BASE, &state);
+#endif
 	if (r < 0)
 		die_perror("VHOST_SET_VRING_BASE failed");
 
 	addr = (struct vhost_vring_addr) {
+#ifdef MQ
+		.index = (vq %2),
+#else
 		.index = vq,
+#endif
 		.desc_user_addr = (u64)(unsigned long)queue->vring.desc,
 		.avail_user_addr = (u64)(unsigned long)queue->vring.avail,
 		.used_user_addr = (u64)(unsigned long)queue->vring.used,
 	};
 
+#ifdef MQ
+	r = ioctl(ndev->vhost_fds[(vq /2)], VHOST_SET_VRING_ADDR, &addr);
+#else
 	r = ioctl(ndev->vhost_fd, VHOST_SET_VRING_ADDR, &addr);
+#endif
 	if (r < 0)
 		die_perror("VHOST_SET_VRING_ADDR failed");
 #if 1
-fprintf(stderr, "%s vq %d vhost_fd %d state.num %d addr %llx %llx %llx\n", 
-	__func__, vq, ndev->vhost_fd, state.num, addr.desc_user_addr, addr.avail_user_addr, addr.used_user_addr);
+fprintf(stderr, "%s vq %d queue->vring.num %d vhost_fd %d addr %llx %llx %llx\n", 
+	__func__, vq, queue->vring.num, ndev->vhost_fd, 
+	addr.desc_user_addr, addr.avail_user_addr, addr.used_user_addr);
 #endif
 
 	return 0;
@@ -673,7 +711,11 @@ static void exit_vq(struct kvm *kvm, void *dev, u32 vq)
 	 */
 	if (ndev->vhost_fd && !is_ctrl_vq(ndev, vq)) {
 		pr_warning("Cannot reset VHOST queue");
+#ifdef MQ
+		ioctl(ndev->vhost_fds[(vq /2)], VHOST_RESET_OWNER);
+#else
 		ioctl(ndev->vhost_fd, VHOST_RESET_OWNER);
+#endif
 		return;
 	}
 
@@ -696,7 +738,11 @@ static void notify_vq_gsi(struct kvm *kvm, void *dev, u32 vq, u32 gsi)
 		return;
 
 	file = (struct vhost_vring_file) {
-		.index	= vq,
+#ifdef MQ
+		.index	= (vq % 2),
+#else
+		.index  = vq,
+#endif
 		.fd	= eventfd(0, 0),
 	};
 
@@ -707,11 +753,19 @@ static void notify_vq_gsi(struct kvm *kvm, void *dev, u32 vq, u32 gsi)
 	queue->irqfd = file.fd;
 	queue->gsi = gsi;
 
+#ifdef MQ
+	r = ioctl(ndev->vhost_fds[(vq /2)], VHOST_SET_VRING_CALL, &file);
+#else
 	r = ioctl(ndev->vhost_fd, VHOST_SET_VRING_CALL, &file);
+#endif
 	if (r < 0)
 		die_perror("VHOST_SET_VRING_CALL failed");
 	file.fd = ndev->tap_fd;
+#ifdef MQ
+	r = ioctl(ndev->vhost_fds[(vq /2)], VHOST_NET_SET_BACKEND, &file);
+#else
 	r = ioctl(ndev->vhost_fd, VHOST_NET_SET_BACKEND, &file);
+#endif
 	if (r != 0)
 		die("VHOST_NET_SET_BACKEND failed %d", errno);
 
@@ -733,21 +787,23 @@ static void notify_vq_eventfd(struct kvm *kvm, void *dev, u32 vq, u32 efd)
 
 	if (ndev->vhost_fd == 0 || is_ctrl_vq(ndev, vq))
 		return;
-
-// TODO here we need several vhost_fds, note that &file is generated via eventfd(0,0)
-// thus, no special treatement is needed	
-// then update the handling of vhost_fd everywhere else
+#ifdef MQ
+	r = ioctl(ndev->vhost_fds[(vq /2)], VHOST_SET_VRING_KICK, &file);
+#else
 	r = ioctl(ndev->vhost_fd, VHOST_SET_VRING_KICK, &file);
-	if (r < 0) {
-#if 1
-		fprintf(stderr, "KICK(ERR): vq %d efd %d\n", vq, efd);
 #endif
+
+#if 1
+#ifdef MQ
+	fprintf(stderr, "%s KICK vq %d vhost_fds %d efd %d return %d\n", 
+			__func__, vq, ndev->vhost_fds[(vq /2)], efd, r);
+#else
+	fprintf(stderr, "%s KICK vq %d vhost_fd %d efd %d return %d\n",
+		       	__func__, vq, ndev->vhost_fd, efd, r);
+#endif
+#endif
+	if (r < 0)
 		die_perror("VHOST_SET_VRING_KICK failed test");
-	}
-#if 1
-	else 
-		fprintf(stderr, "KICK: vq %d efd %d\n", vq, efd);
-#endif
 }
 
 static int notify_vq(struct kvm *kvm, void *dev, u32 vq)
@@ -811,9 +867,11 @@ static void virtio_net__vhost_init(struct kvm *kvm, struct net_dev *ndev)
 	fprintf(stderr, "\n VHOST INIT\n");
 #endif
 
+#ifndef MQ
 	ndev->vhost_fd = open("/dev/vhost-net", O_RDWR);
 	if (ndev->vhost_fd < 0)
 		die_perror("Failed openning vhost-net device");
+#endif
 
 	mem = calloc(1, sizeof(*mem) + kvm->mem_slots * sizeof(struct vhost_memory_region));
 	if (mem == NULL)
@@ -830,13 +888,33 @@ static void virtio_net__vhost_init(struct kvm *kvm, struct net_dev *ndev)
 	}
 	mem->nregions = i;
 
+#ifdef MQ
+	for (i=0; ((u32)i < ndev->queue_pairs) && 
+			(i < VIRTIO_NET_NUM_QUEUES); i++) {
+
+		ndev->vhost_fds[i] = open("/dev/vhost-net", O_RDWR);
+	        if (ndev->vhost_fds[i] < 0)
+			die_perror("Failed openning vhost-net device");
+
+	r = ioctl(ndev->vhost_fds[i], VHOST_SET_OWNER);
+#else
 	r = ioctl(ndev->vhost_fd, VHOST_SET_OWNER);
+#endif
 	if (r != 0)
 		die_perror("VHOST_SET_OWNER failed");
 
+#ifdef MQ
+	r = ioctl(ndev->vhost_fds[i], VHOST_SET_MEM_TABLE, mem);
+#else
 	r = ioctl(ndev->vhost_fd, VHOST_SET_MEM_TABLE, mem);
+#endif
 	if (r != 0)
 		die_perror("VHOST_SET_MEM_TABLE failed");
+
+#ifdef MQ
+	}
+	ndev->vhost_fd = ndev->vhost_fds[0];
+#endif
 
 	ndev->vdev.use_vhost = true;
 
