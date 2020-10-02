@@ -63,6 +63,10 @@ static int virtio_pci__init_ioeventfd(struct kvm *kvm, struct virtio_device *vde
 	if (r)
 		goto free_ioport_evt;
 
+#if 1
+	fprintf(stderr, "%s notify vq %d, fd %d\n", __func__, vq, fd);
+	// the following calls the virtio/net.c:notify_vq_eventfd, which kicks the vq
+#endif
 	if (vdev->ops->notify_vq_eventfd)
 		vdev->ops->notify_vq_eventfd(kvm, vpci->dev, vq, fd);
 	return 0;

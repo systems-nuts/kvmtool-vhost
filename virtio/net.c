@@ -321,6 +321,9 @@ static bool virtio_net__tap_init(struct net_dev *ndev)
 	const struct virtio_net_params *params = ndev->params;
 	bool skipconf = !!params->tapif;
 
+#if 1
+	fprintf(stderr, "TAP init!\n");
+#endif
 	hdr_len = has_virtio_feature(ndev, VIRTIO_NET_F_MRG_RXBUF) ?
 			sizeof(struct virtio_net_hdr_mrg_rxbuf) :
 			sizeof(struct virtio_net_hdr);
@@ -515,6 +518,10 @@ static int virtio_net__vhost_set_features(struct net_dev *ndev)
 
 	if (ioctl(ndev->vhost_fd, VHOST_GET_FEATURES, &vhost_features) != 0)
 		die_perror("VHOST_GET_FEATURES failed");
+#if 1
+	fprintf(stderr, "\n VHOST_GET_FEATURES: 0x%llx (%llx)\n",
+			vhost_features, (vhost_features & (u64)(1UL << VIRTIO_NET_F_MQ)));
+#endif
 
 	/* make sure both side support mergable rx buffers */
 	if (vhost_features & 1UL << VIRTIO_NET_F_MRG_RXBUF &&
@@ -538,6 +545,9 @@ static void set_guest_features(struct kvm *kvm, void *dev, u32 features)
 
 static void virtio_net_start(struct net_dev *ndev)
 {
+#if 1
+	printf("\n VIRTIO NET START\n");
+#endif
 	if (ndev->mode == NET_MODE_TAP) {
 		if (!virtio_net__tap_init(ndev))
 			die_perror("TAP device initialized failed because");
@@ -638,6 +648,10 @@ static int init_vq(struct kvm *kvm, void *dev, u32 vq, u32 page_size, u32 align,
 	r = ioctl(ndev->vhost_fd, VHOST_SET_VRING_ADDR, &addr);
 	if (r < 0)
 		die_perror("VHOST_SET_VRING_ADDR failed");
+#if 1
+fprintf(stderr, "%s vq %d vhost_fd %d state.num %d addr %llx %llx %llx\n", 
+	__func__, vq, ndev->vhost_fd, state.num, addr.desc_user_addr, addr.avail_user_addr, addr.used_user_addr);
+#endif
 
 	return 0;
 }
@@ -701,6 +715,11 @@ static void notify_vq_gsi(struct kvm *kvm, void *dev, u32 vq, u32 gsi)
 	if (r != 0)
 		die("VHOST_NET_SET_BACKEND failed %d", errno);
 
+#if 1
+	fprintf(stderr, "%s vhost_fd %d vq %d gsi %d file.fd %d (backend)\n",
+		       __func__, ndev->vhost_fd, vq, gsi, file.fd);
+#endif	
+
 }
 
 static void notify_vq_eventfd(struct kvm *kvm, void *dev, u32 vq, u32 efd)
@@ -715,9 +734,20 @@ static void notify_vq_eventfd(struct kvm *kvm, void *dev, u32 vq, u32 efd)
 	if (ndev->vhost_fd == 0 || is_ctrl_vq(ndev, vq))
 		return;
 
+// TODO here we need several vhost_fds, note that &file is generated via eventfd(0,0)
+// thus, no special treatement is needed	
+// then update the handling of vhost_fd everywhere else
 	r = ioctl(ndev->vhost_fd, VHOST_SET_VRING_KICK, &file);
-	if (r < 0)
-		die_perror("VHOST_SET_VRING_KICK failed");
+	if (r < 0) {
+#if 1
+		fprintf(stderr, "KICK(ERR): vq %d efd %d\n", vq, efd);
+#endif
+		die_perror("VHOST_SET_VRING_KICK failed test");
+	}
+#if 1
+	else 
+		fprintf(stderr, "KICK: vq %d efd %d\n", vq, efd);
+#endif
 }
 
 static int notify_vq(struct kvm *kvm, void *dev, u32 vq)
@@ -777,6 +807,10 @@ static void virtio_net__vhost_init(struct kvm *kvm, struct net_dev *ndev)
 	struct vhost_memory *mem;
 	int r, i;
 
+#if 1
+	fprintf(stderr, "\n VHOST INIT\n");
+#endif
+
 	ndev->vhost_fd = open("/dev/vhost-net", O_RDWR);
 	if (ndev->vhost_fd < 0)
 		die_perror("Failed openning vhost-net device");
@@ -806,6 +840,17 @@ static void virtio_net__vhost_init(struct kvm *kvm, struct net_dev *ndev)
 
 	ndev->vdev.use_vhost = true;
 
+#if 1
+u64 vhost_features;
+if (ioctl(ndev->vhost_fd, VHOST_GET_FEATURES, &vhost_features) != 0) 
+	die_perror("VHOST_GET_FEATURES failed");
+fprintf(stderr, "\n VHOST_GET_FEATURES: 0x%llx (%llx)\n", 
+	vhost_features, (vhost_features & (u64)(1UL << VIRTIO_NET_F_MQ)));
+
+fprintf(stderr, "VHOST INIT done -- regions %d slots %d\n",
+	i, kvm->mem_slots);
+#endif
+
 	free(mem);
 }
 
@@ -829,6 +874,9 @@ static int set_net_param(struct kvm *kvm, struct virtio_net_params *p,
 			p->mode = NET_MODE_USER;
 		} else if (!strncmp(val, "tap", 3)) {
 			p->mode = NET_MODE_TAP;
+#if 1
+			fprintf(stderr, "%s NET: mode TAP\n", __func__);
+#endif
 		} else if (!strncmp(val, "none", 4)) {
 			kvm->cfg.no_net = 1;
 			return -1;
@@ -848,10 +896,16 @@ static int set_net_param(struct kvm *kvm, struct virtio_net_params *p,
 		p->tapif = strdup(val);
 	} else if (strcmp(param, "vhost") == 0) {
 		p->vhost = atoi(val);
+#if 1
+		fprintf(stderr, "%s NET: vhost\n", __func__);
+#endif
 	} else if (strcmp(param, "fd") == 0) {
 		p->fd = atoi(val);
 	} else if (strcmp(param, "mq") == 0) {
 		p->mq = atoi(val);
+#if 1
+		fprintf(stderr, "%s NET: mq=%d\n", __func__, p->mq);
+#endif
 	} else
 		die("Unknown network parameter %s", param);
 
@@ -966,7 +1020,10 @@ static int virtio_net__init_one(struct virtio_net_params *params)
 				   "falling back to %s.", params->trans,
 				   virtio_trans_name(trans));
 	}
-
+#if 1
+	fprintf(stderr, "%s ndev queue pairs %d %d\n", 
+		__func__, ndev->queue_pairs, params->mq);
+#endif
 	r = virtio_init(params->kvm, ndev, &ndev->vdev, ops, trans,
 			PCI_DEVICE_ID_VIRTIO_NET, VIRTIO_ID_NET, PCI_CLASS_NET);
 	if (r < 0) {
