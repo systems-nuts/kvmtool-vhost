@@ -243,6 +243,9 @@ static void *virtio_net_ctrl_thread(void *p)
 			pthread_cond_wait(&queue->cond, &queue->lock.mutex);
 		mutex_unlock(&queue->lock);
 
+#if 1
+		fprintf(stderr,"%s before WHILE\n", __func__);
+#endif
 		while (virt_queue__available(vq)) {
 			head = virt_queue__get_iov(vq, iov, &out, &in, kvm);
 			ctrl = iov[0].iov_base;
@@ -250,9 +253,15 @@ static void *virtio_net_ctrl_thread(void *p)
 
 			switch (ctrl->class) {
 			case VIRTIO_NET_CTRL_MQ:
+#if 1
+	                        fprintf(stderr,"%s VIRTIO_NET_CTRL_MQ %d\n", __func__, ctrl->class);
+#endif
 				*ack = virtio_net_handle_mq(kvm, ndev, ctrl);
 				break;
 			default:
+#if 1
+	                        fprintf(stderr,"%s default %d\n", __func__, ctrl->class);
+#endif
 				*ack = VIRTIO_NET_ERR;
 				break;
 			}
@@ -630,6 +639,10 @@ static int init_vq(struct kvm *kvm, void *dev, u32 vq, u32 page_size, u32 align,
 	mutex_init(&net_queue->lock);
 	pthread_cond_init(&net_queue->cond, NULL);
 	if (is_ctrl_vq(ndev, vq)) {
+#if 1
+		fprintf(stderr, "virtio_net_ctrl_thread vq %d addr %llx %llx %llx\n",
+				vq, (u64)queue->vring.desc, (u64)queue->vring.avail, (u64)queue->vring.used);
+#endif		
 		pthread_create(&net_queue->thread, NULL, virtio_net_ctrl_thread,
 			       net_queue);
 
@@ -789,8 +802,13 @@ static void notify_vq_eventfd(struct kvm *kvm, void *dev, u32 vq, u32 efd)
 	};
 	int r;
 
-	if (ndev->vhost_fd == 0 || is_ctrl_vq(ndev, vq))
+	if (ndev->vhost_fd == 0 || is_ctrl_vq(ndev, vq)) {
+#if 1
+		if (is_ctrl_vq(ndev,vq))
+			fprintf(stderr,"%s vq %d is_ctrl_vq NO KICK\n", __func__, vq);
+#endif
 		return;
+	}
 #ifdef MQ
 	r = ioctl(ndev->vhost_fds[(vq /2)], VHOST_SET_VRING_KICK, &file);
 #else
