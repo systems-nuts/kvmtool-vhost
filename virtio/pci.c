@@ -44,15 +44,8 @@ static int virtio_pci__init_ioeventfd(struct kvm *kvm, struct virtio_device *vde
 	 * Vhost will poll the eventfd in host kernel side, otherwise we
 	 * need to poll in userspace.
 	 */
-fprintf(stderr,"%s vq %d MQ %d\n", __func__, vq, vdev->ops->get_vq_count(kvm, vpci->dev));
-		//vpci->queue_selector);
-		//vdev->ops->get_size_vq(kvm, vpci->dev, vpci->queue_selector) );
-		//kvm->cfg.net_params->mq);
-	if ( (!vdev->use_vhost)
-#if 1
-	|| ((u32)vdev->ops->get_vq_count(kvm, vpci->dev)==(vq+1))			
-#endif
-	   )
+	if ( (!vdev->use_vhost) ||
+		((u32)vdev->ops->get_vq_count(kvm, vpci->dev)==(vq+1)) )
 		flags |= IOEVENTFD_FLAG_USER_POLL;
 
 	/* ioport */
@@ -71,10 +64,6 @@ fprintf(stderr,"%s vq %d MQ %d\n", __func__, vq, vdev->ops->get_vq_count(kvm, vp
 	if (r)
 		goto free_ioport_evt;
 
-#if 1
-	fprintf(stderr, "%s notify vq %d, fd %d\n", __func__, vq, fd);
-	// the following calls the virtio/net.c:notify_vq_eventfd, which kicks the vq
-#endif
 	if (vdev->ops->notify_vq_eventfd)
 		vdev->ops->notify_vq_eventfd(kvm, vpci->dev, vq, fd);
 	return 0;
