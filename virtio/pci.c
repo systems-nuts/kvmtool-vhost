@@ -44,8 +44,7 @@ static int virtio_pci__init_ioeventfd(struct kvm *kvm, struct virtio_device *vde
 	 * Vhost will poll the eventfd in host kernel side, otherwise we
 	 * need to poll in userspace.
 	 */
-	if ( (!vdev->use_vhost) ||
-		((u32)vdev->ops->get_vq_count(kvm, vpci->dev)==(vq+1)) )
+	if (!vdev->use_vhost || (vdev->ops->get_vq_count(kvm, vpci->dev) == (int)vq + 1))
 		flags |= IOEVENTFD_FLAG_USER_POLL;
 
 	/* ioport */

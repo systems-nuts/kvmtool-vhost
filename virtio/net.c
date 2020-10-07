@@ -513,7 +513,8 @@ static int virtio_net__vhost_set_features(struct net_dev *ndev)
 {
 	u64 features = 1UL << VIRTIO_RING_F_EVENT_IDX;
 	u64 vhost_features;
-	int i, r = 0;
+	u32 i;
+	int r = 0;
 
 	if (ioctl(ndev->vhost_fd, VHOST_GET_FEATURES, &vhost_features) != 0)
 		die_perror("VHOST_GET_FEATURES failed");
@@ -523,8 +524,12 @@ static int virtio_net__vhost_set_features(struct net_dev *ndev)
 			has_virtio_feature(ndev, VIRTIO_NET_F_MRG_RXBUF))
 		features |= 1UL << VIRTIO_NET_F_MRG_RXBUF;
 
-	for (i=0; ((u32)i < ndev->queue_pairs) && (r >= 0); i++)
+	for (i = 0 ; i < ndev->queue_pairs ; i++) {
 		r = ioctl(ndev->vhost_fds[i], VHOST_SET_FEATURES, &features); 
+		if (r < 0)
+			break;
+	}
+
 	return r;
 }
 
@@ -582,13 +587,13 @@ static bool is_ctrl_vq(struct net_dev *ndev, u32 vq)
 static int init_vq(struct kvm *kvm, void *dev, u32 vq, u32 page_size, u32 align,
 		   u32 pfn)
 {
-	struct vhost_vring_state state = { .index = (vq %2) };
+	struct vhost_vring_state state = { .index = vq % 2 };
 	struct net_dev_queue *net_queue;
 	struct vhost_vring_addr addr;
 	struct net_dev *ndev = dev;
 	struct virt_queue *queue;
 	void *p;
-	int r;
+	int r, vq_fd = vq / 2;
 
 	compat__remove_message(compat_id);
 
@@ -623,24 +628,24 @@ static int init_vq(struct kvm *kvm, void *dev, u32 vq, u32 page_size, u32 align,
 	if (queue->endian != VIRTIO_ENDIAN_HOST)
 		die_perror("VHOST requires the same endianness in guest and host");
 
-	state.num = queue->vring.num; //number of decriptors
-        r = ioctl(ndev->vhost_fds[(vq /2)], VHOST_SET_VRING_NUM, &state);
+	state.num = queue->vring.num; 
+	r = ioctl(ndev->vhost_fds[vq_fd], VHOST_SET_VRING_NUM, &state);
 	if (r < 0)
 		die_perror("VHOST_SET_VRING_NUM failed");
 
-	state.num = 0; //descriptors base
-	r = ioctl(ndev->vhost_fds[(vq /2)], VHOST_SET_VRING_BASE, &state);
+	state.num = 0;
+	r = ioctl(ndev->vhost_fds[vq_fd], VHOST_SET_VRING_BASE, &state);
 	if (r < 0)
 		die_perror("VHOST_SET_VRING_BASE failed");
 
 	addr = (struct vhost_vring_addr) {
-		.index = (vq %2),
+		.index = vq % 2,
 		.desc_user_addr = (u64)(unsigned long)queue->vring.desc,
 		.avail_user_addr = (u64)(unsigned long)queue->vring.avail,
 		.used_user_addr = (u64)(unsigned long)queue->vring.used,
 	};
 
-	r = ioctl(ndev->vhost_fds[(vq /2)], VHOST_SET_VRING_ADDR, &addr);
+	r = ioctl(ndev->vhost_fds[vq_fd], VHOST_SET_VRING_ADDR, &addr);
 	if (r < 0)
 		die_perror("VHOST_SET_VRING_ADDR failed");
 
@@ -687,7 +692,7 @@ static void notify_vq_gsi(struct kvm *kvm, void *dev, u32 vq, u32 gsi)
 		return;
 
 	file = (struct vhost_vring_file) {
-		.index	= (vq % 2),
+		.index	= vq % 2,
 		.fd	= eventfd(0, 0),
 	};
 
@@ -712,7 +717,7 @@ static void notify_vq_eventfd(struct kvm *kvm, void *dev, u32 vq, u32 efd)
 {
 	struct net_dev *ndev = dev;
 	struct vhost_vring_file file = {
-		.index	= (vq % 2),
+		.index	= vq % 2,
 		.fd	= efd,
 	};
 	int r;
@@ -723,7 +728,7 @@ static void notify_vq_eventfd(struct kvm *kvm, void *dev, u32 vq, u32 efd)
 	r = ioctl(ndev->vhost_fds[(vq /2)], VHOST_SET_VRING_KICK, &file);
 
 	if (r < 0)
-		die_perror("VHOST_SET_VRING_KICK failed test");
+		die_perror("VHOST_SET_VRING_KICK failed");
 }
 
 static int notify_vq(struct kvm *kvm, void *dev, u32 vq)
@@ -798,11 +803,11 @@ static void virtio_net__vhost_init(struct kvm *kvm, struct net_dev *ndev)
 	}
 	mem->nregions = i;
 
-	for (i=0; ((u32)i < ndev->queue_pairs) && 
-			(i < VIRTIO_NET_NUM_QUEUES); i++) {
+	for (i = 0 ; (i < (int)ndev->queue_pairs) && 
+			(i < VIRTIO_NET_NUM_QUEUES) ; i++) {
 
 		ndev->vhost_fds[i] = open("/dev/vhost-net", O_RDWR);
-	        if (ndev->vhost_fds[i] < 0)
+		if (ndev->vhost_fds[i] < 0)
 			die_perror("Failed openning vhost-net device");
 
 		r = ioctl(ndev->vhost_fds[i], VHOST_SET_OWNER);
@@ -977,6 +982,7 @@ static int virtio_net__init_one(struct virtio_net_params *params)
 				   "falling back to %s.", params->trans,
 				   virtio_trans_name(trans));
 	}
+
 	r = virtio_init(params->kvm, ndev, &ndev->vdev, ops, trans,
 			PCI_DEVICE_ID_VIRTIO_NET, VIRTIO_ID_NET, PCI_CLASS_NET);
 	if (r < 0) {
